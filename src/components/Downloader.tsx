@@ -1,423 +1,325 @@
-"use client"
+"use client";
 
-import {useState} from "react"
-import axios from "axios"
-import ProgressBar from "./ProgressBar"
-import PlatformIcon from "./PlatformIcon"
-import FormatDropdown from "./FormatDropdown"
-import {Format} from "../types/Format"
+import { useState, useRef } from "react";
+import axios from "axios";
+import ProgressBar from "./ProgressBar";
+import PlatformIcon from "./PlatformIcon";
+import { ClipboardIcon, XMarkIcon } from "@heroicons/react/24/outline";
 
-export default function Downloader(){
+export default function Downloader() {
+  const [url, setUrl] = useState("");
+  const [error, setError] = useState("");
+  const [loading, setLoading] = useState(false);
 
- const [url,setUrl] = useState("")
- const [error,setError] = useState("")
- const [loading,setLoading] = useState(false)
- const [downloading,setDownloading] = useState(false)
- const [thumbnail,setThumbnail] = useState("")
- const [title,setTitle] = useState("")
- const [duration,setDuration] = useState("")
- const [formats,setFormats] = useState<Format[]>([])
- const [format,setFormat] = useState("")
- const [progress,setProgress] = useState(0)
- const [download,setDownload] = useState("")
- const [generated,setGenerated] = useState(false)
+  const [thumbnail, setThumbnail] = useState("");
+  const [title, setTitle] = useState("");
+  const [duration, setDuration] = useState("");
 
- function resetAll(){
+  const [formats, setFormats] = useState<any[]>([]);
+  const [progress, setProgress] = useState(0);
 
-  setThumbnail("")
-  setTitle("")
-  setDuration("")
-  setFormats([])
-  setFormat("")
-  setDownload("")
-  setGenerated(false)
-  setProgress(0)
+  const [activeDownload, setActiveDownload] = useState<string | null>(null);
 
- }
+  const pollRef = useRef<any>(null);
 
- function clearInput(){
+  const isYouTube = url.includes("youtube") || url.includes("youtu.be");
 
-  setUrl("")
-  resetAll()
-  setError("")
-
- }
-
- async function pasteURL(){
-
-  try{
-
-   const text = await navigator.clipboard.readText()
-   setUrl(text)
-
-  }catch{
-
-   setError("Clipboard permission denied")
-
+  function stopPolling() {
+    if (pollRef.current) {
+      clearInterval(pollRef.current);
+      pollRef.current = null;
+    }
   }
 
- }
-
- async function generateInfo(){
-
-  setError("")
-
-  if(!url.trim()){
-   setError("Paste a valid video URL")
-   return
+  async function pasteURL() {
+    try {
+      const text = await navigator.clipboard.readText();
+      setUrl(text);
+    } catch {
+      setError("Clipboard permission denied");
+    }
   }
 
-  if(generated){
-   setError("Video already generated")
-   return
+  function clearInput() {
+    setUrl("");
   }
 
-  setLoading(true)
+  async function generateInfo() {
+    setError("");
+    stopPolling();
 
-  try{
+    if (!url.trim()) {
+      setError("Paste a valid video URL");
+      return;
+    }
 
-   const res = await axios.post("http://localhost:5000/api/info",{url})
-   const jobId = res.data.jobId
+    setLoading(true);
 
-   let attempts = 0
+    try {
+      const { data } = await axios.post("http://localhost:5000/api/info", {
+        url,
+      });
 
-   const interval = setInterval(async()=>{
+      const video = data.result || data;
 
-    attempts++
+      setThumbnail(video.thumbnail);
+      setTitle(video.title);
+      setDuration(formatDuration(video.duration));
 
-    try{
+      const map: any = {};
+      const allowed = [360, 480, 720, 1080];
 
-     const {data} = await axios.get(`http://localhost:5000/api/status/${jobId}`)
+      video.formats?.forEach((f: any) => {
+        if (!f.height) return;
 
-     if(data.status==="completed" || data.state==="completed"){
+        const height = f.height;
 
-      const video = data.result
+        if (!allowed.includes(height)) return;
 
-      setThumbnail(video.thumbnail)
-      setTitle(video.title)
-      setDuration(formatDuration(video.duration))
-
-      const map:any={}
-
-      video.formats.forEach((f:any)=>{
-
-       if(f.ext==="mp4" && f.height){
-
-        if(!map[f.height]){
-
-         map[f.height]={
-
-          label:`${f.height}p MP4`,
-          formatId:f.format_id,
-          height:f.height,
-          size:formatSize(f.filesize),
-          type:"video"
-
-         }
-
+        if (!map[height]) {
+          map[height] = {
+            label: `${height}p`,
+            formatId: f.format_id,
+            height: height,
+            size: formatSize(f.filesize),
+            badge: height >= 720 ? "HD" : "SD",
+            hasVideo: f.hasVideo,
+            hasAudio: f.hasAudio,
+            ext: f.ext,
+          };
         }
+      });
 
-       }
+      const videoFormats = Object.values(map);
 
-      })
+      videoFormats.sort((a: any, b: any) => b.height - a.height);
 
-      const mp4Formats:Object[]=Object.values(map)
-      mp4Formats.sort((a:any,b:any)=>b.height-a.height)
+      const mp3 = {
+        label: "MP3",
+        formatId: "mp3",
+        size: "",
+        badge: "Audio",
+        hasVideo: false,
+        hasAudio: true,
+      };
 
-      const mp3:Format={
+      setFormats([...videoFormats, mp3]);
 
-       label:"MP3 Audio",
-       formatId:"mp3",
-       size:formatSize(video.filesize_approx),
-       type:"audio"
+      setLoading(false);
+    } catch (err: any) {
+      setLoading(false);
+      setError(err?.response?.data?.error || "Failed to fetch video info");
+    }
+  }
 
+  async function startDownload(formatId: string) {
+    setActiveDownload(formatId);
+    setProgress(0);
+    stopPolling();
+
+    try {
+      const res = await axios.post("http://localhost:5000/api/download", {
+        url,
+        format: formatId,
+      });
+
+      if (res.data?.type === "direct") {
+        window.open(res.data.downloadUrl);
+        setActiveDownload(null);
+        return;
       }
 
-      const finalFormats=[...mp4Formats,mp3] as Format[]
+      const jobId = res.data?.jobId;
 
-      setFormats(finalFormats)
-
-      const preferred=
-       finalFormats.find(f=>f.height===720) ||
-       finalFormats.find(f=>f.height===480) ||
-       finalFormats.find(f=>f.height===360)
-
-      if(preferred){
-       setFormat(preferred.formatId)
+      if (!jobId) {
+        setActiveDownload(null);
+        setError("Invalid download response");
+        return;
       }
 
-      setGenerated(true)
-      setLoading(false)
+      pollRef.current = setInterval(async () => {
+        try {
+          const { data } = await axios.get(
+            `http://localhost:5000/api/status/${jobId}`,
+          );
 
-      clearInterval(interval)
+          setProgress(data.progress || 0);
 
-     }
+          if (data.status === "completed" && data.result) {
+            stopPolling();
 
-     if(attempts>60){
+            window.open(`http://localhost:5000${data.result.downloadUrl}`);
 
-      clearInterval(interval)
-      setLoading(false)
-      setError("Timeout. Try again.")
+            setActiveDownload(null);
+          }
 
-     }
+          if (data.status === "failed") {
+            stopPolling();
 
-    }catch{
+            setActiveDownload(null);
 
-     clearInterval(interval)
-     setLoading(false)
-     setError("Failed to fetch video info")
+            setError("Download failed");
+          }
+        } catch {
+          stopPolling();
 
+          setActiveDownload(null);
+
+          setError("Download error");
+        }
+      }, 1000);
+    } catch {
+      setError("Server error");
+      setActiveDownload(null);
     }
-
-   },1000)
-
-  }catch{
-
-   setLoading(false)
-   setError("Server error")
-
   }
 
- }
+  function formatDuration(sec: number) {
+    if (!sec) return "";
 
- async function startDownload(){
+    const m = Math.floor(sec / 60);
+    const s = sec % 60;
 
-  setError("")   // ERROR RESET FIX
-
-  if(!format){
-   setError("Select format")
-   return
+    return `${m}:${s < 10 ? "0" : ""}${s}`;
   }
 
-  setDownloading(true)
-  setProgress(0)
-
-  try{
-
-   const res = await axios.post("http://localhost:5000/api/download",{url,format})
-   const jobId = res.data.jobId
-
-   let attempts = 0
-
-   const interval=setInterval(async()=>{
-
-    attempts++
-
-    try{
-
-     const {data}=await axios.get(`http://localhost:5000/api/status/${jobId}`)
-
-     setProgress(data.progress || 0)
-
-     if(data.status==="completed" || data.state==="completed"){
-
-      setDownload(data.result.downloadUrl)
-
-      setDownloading(false)
-      clearInterval(interval)
-
-     }
-
-     if(data.status==="failed" || data.state==="failed"){
-
-      setError("Download failed")
-      setDownloading(false)
-      clearInterval(interval)
-
-     }
-
-     if(attempts>120){
-
-      setError("Download timeout")
-      setDownloading(false)
-      clearInterval(interval)
-
-     }
-
-    }catch{
-
-     setError("Download error")
-     setDownloading(false)
-     clearInterval(interval)
-
-    }
-
-   },1000)
-
-  }catch{
-
-   setError("Server error")
-   setDownloading(false)
-
+  function formatSize(bytes: number) {
+    if (!bytes) return "";
+    return (bytes / 1024 / 1024).toFixed(1) + " MB";
   }
 
- }
+  return (
+    <div className="flex justify-center mt-10 px-4">
+      <div className="bg-white shadow-xl rounded-xl p-6 w-full max-w-4xl">
+        <div className="flex items-center gap-2 mb-4">
+          <PlatformIcon url={url} />
+        </div>
 
- function formatDuration(sec:number){
+        <div className="flex flex-col md:flex-row gap-2">
+          <div className="relative flex-1">
+            <input
+              value={url}
+              onChange={(e) => setUrl(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") generateInfo();
+              }}
+              placeholder="Paste video URL"
+              className="w-full border p-3 pr-20 rounded-lg"
+            />
 
-  if(!sec) return ""
+            <div className="absolute right-3 top-1/2 -translate-y-1/2 flex gap-2">
+              {url && (
+                <button
+                  onClick={clearInput}
+                  className="text-gray-400 hover:text-black cursor-pointer"
+                >
+                  <XMarkIcon className="w-5 h-5" />
+                </button>
+              )}
 
-  const m=Math.floor(sec/60)
-  const s=sec%60
+              <button
+                onClick={pasteURL}
+                className="text-gray-400 hover:text-black cursor-pointer"
+              >
+                <ClipboardIcon className="w-5 h-5" />
+              </button>
+            </div>
+          </div>
 
-  return `${m}:${s<10?"0":""}${s}`
+          <button
+            onClick={generateInfo}
+            className="bg-blue-500 text-white px-6 py-3 rounded-lg md:w-auto w-full cursor-pointer"
+          >
+            {loading ? (
+              <div className="w-5 h-5 border-2 border-white border-t-transparent rounded-full animate-spin mx-auto" />
+            ) : (
+              "Generate"
+            )}
+          </button>
+        </div>
 
- }
+        {error && <p className="text-red-500 mt-3">{error}</p>}
 
- function formatSize(bytes:number){
+        {thumbnail && (
+          <div className="mt-6">
+            <div className="grid md:grid-cols-2 gap-6">
+              <div>
+                <img src={thumbnail} className="rounded-lg" />
+                <p className="text-gray-500 text-sm mt-2">
+                  Duration: {duration}
+                </p>
+              </div>
 
-  if(!bytes) return ""
+              <div>
+                <h3 className="font-semibold text-lg">{title}</h3>
 
-  return (bytes/1024/1024).toFixed(1)+" MB"
+                {isYouTube && (
+                  <a
+                    href={thumbnail}
+                    download
+                    className="mt-3 inline-block bg-blue-500 text-white px-4 py-2 rounded-lg cursor-pointer"
+                  >
+                    Download Thumbnail
+                  </a>
+                )}
+              </div>
+            </div>
 
- }
+            <div className="mt-6 space-y-2">
+              {formats.map((f, index) => {
+                const loading = f.formatId === activeDownload;
+                const recommended = index === 1;
+                const mute = f.hasVideo && !f.hasAudio;
 
- return(
+                return (
+                  <div
+                    key={f.formatId}
+                    className="flex items-center justify-between shadow-md p-3 rounded-lg"
+                  >
+                    <div className="flex items-center gap-3">
+                      <span className="font-medium">{f.label}</span>
 
- <div className="w-full flex justify-center mt-10 px-4">
+                      {mute && <span className="text-red-500 text-sm">🔇</span>}
 
-  <div className="bg-white shadow-xl rounded-[30px] p-6 w-full max-w-5xl">
+                      <span className="text-xs bg-gray-200 px-2 py-1 rounded">
+                        {f.badge}
+                      </span>
 
-   <div className="flex items-center gap-2 mb-2">
-    <PlatformIcon url={url}/>
-   </div>
+                      {recommended && (
+                        <span className="text-xs bg-green-100 text-green-700 px-2 py-1 rounded">
+                          Recommended
+                        </span>
+                      )}
 
-   <div className="flex flex-col md:flex-row gap-3">
+                      <span className="text-gray-500 text-sm">{f.size}</span>
+                    </div>
 
-    <div className="relative flex-1">
+                    <button
+                      onClick={() => startDownload(f.formatId)}
+                      className="bg-green-500 text-white px-4 py-2 rounded-lg cursor-pointer flex items-center justify-center w-28"
+                    >
+                      {loading ? (
+                        <div className="w-5 h-5 border-2 border-white border-t-transparent rounded-full animate-spin" />
+                      ) : (
+                        "Download"
+                      )}
+                    </button>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        )}
 
-     <input
-      value={url}
-      onChange={(e)=>setUrl(e.target.value)}
-      onKeyDown={(e)=>{
-
-       if(e.key==="Enter"){
-        generateInfo()
-       }
-
-      }}
-      placeholder="Paste video URL"
-      className="w-full border p-3 rounded-[30px] outline-none focus:ring-2 focus:ring-blue-400 pr-10"
-     />
-
-     {url &&(
-
-      <button
-       onClick={clearInput}
-       className="absolute right-3 top-3 text-gray-400 cursor-pointer"
-      >
-       ✕
-      </button>
-
-     )}
-
+        {progress > 0 && (
+          <div className="mt-6">
+            <ProgressBar progress={progress} />
+            <p className="text-center text-gray-500 mt-2">
+              Downloading {progress}%
+            </p>
+          </div>
+        )}
+      </div>
     </div>
-
-    <button
-     onClick={pasteURL}
-     className="bg-gray-200 px-6 py-3 rounded-[30px] cursor-pointer"
-    >
-     Paste
-    </button>
-
-    <button
-     onClick={generateInfo}
-     className="bg-blue-500 text-white px-6 py-3 rounded-[30px] cursor-pointer flex items-center justify-center gap-2"
-    >
-
-     {loading ?(
-      <div className="w-5 h-5 border-2 border-white border-t-transparent rounded-full animate-spin"/>
-     ):"Generate"}
-
-    </button>
-
-   </div>
-
-   {error &&(
-    <p className="text-red-500 mt-3">{error}</p>
-   )}
-
-   {thumbnail &&(
-
-    <div className="grid md:grid-cols-2 gap-6 mt-6 items-center">
-
-     <div>
-
-      <img
-       src={thumbnail}
-       className="rounded-[30px]"
-      />
-
-      <p className="text-gray-500 text-sm mt-2">
-       Duration: {duration}
-      </p>
-
-     </div>
-
-     <div>
-
-      <h3 className="font-semibold text-lg">
-       {title}
-      </h3>
-
-      <p className="text-gray-500 text-sm mt-4">
-       Change Format
-      </p>
-
-      <FormatDropdown
-       formats={formats}
-       value={format}
-       onChange={setFormat}
-      />
-
-      <button
-       onClick={startDownload}
-       className="w-full mt-4 bg-green-500 text-white p-3 rounded-[30px] cursor-pointer flex items-center justify-center gap-2"
-      >
-
-       {downloading?(
-        <>
-         <div className="w-5 h-5 border-2 border-white border-t-transparent rounded-full animate-spin"/>
-         Preparing
-        </>
-       ):"Download"}
-
-      </button>
-
-     </div>
-
-    </div>
-
-   )}
-
-   {progress>0 &&(
-
-    <div className="mt-6">
-
-     <ProgressBar progress={progress}/>
-
-     <p className="text-center mt-2 text-gray-500">
-      Downloading {progress}%
-     </p>
-
-    </div>
-
-   )}
-
-   {download &&(
-
-    <a
-     href={`http://localhost:5000${download}`}
-     className="block text-center mt-6 bg-purple-500 text-white p-3 rounded-[30px]"
-    >
-     Download File
-    </a>
-
-   )}
-
-  </div>
-
- </div>
-
- )
+  );
 }
